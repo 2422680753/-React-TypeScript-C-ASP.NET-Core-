@@ -69,9 +69,10 @@ builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddSingleton<IHeartbeatService, HeartbeatService>();
 builder.Services.AddSingleton<IDeviceStateService, DeviceStateService>();
 builder.Services.AddSingleton<IConnectionManager, ConnectionManager>();
-builder.Services.AddScoped<IAlarmGovernanceService, AlarmGovernanceService>();
+builder.Services.AddSingleton<IAlarmGovernanceService, AlarmGovernanceService>();
+builder.Services.AddSingleton<IEnhancedAlarmGovernanceService, EnhancedAlarmGovernanceService>();
 
-builder.Services.AddHostedService<HeartbeatBackgroundService>();
+builder.Services.AddHostedService<EnhancedAlarmBackgroundService>();
 
 builder.Services.AddAutoMapper(AppDomain.CurrentDomain.GetAssemblies());
 
@@ -88,6 +89,15 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.EnsureCreated();
+
+    var alarmService = scope.ServiceProvider.GetRequiredService<IEnhancedAlarmGovernanceService>();
+    await alarmService.InitializeAsync();
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -107,11 +117,5 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapHub<MonitoringHub>("/monitoringHub")
     .RequireAuthorization();
-
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
-}
 
 app.Run();

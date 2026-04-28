@@ -1,0 +1,336 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+    'Noto Color Emoji';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.ant-layout {
+  min-height: 100vh;
+}
+
+.ant-layout-sider {
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  left: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.ant-menu-item,
+.ant-menu-submenu-title {
+  display: flex;
+  align-items: center;
+}
+
+.ant-menu-item .anticon,
+.ant-menu-submenu-title .anticon {
+  margin-right: 8px;
+  font-size: 16px;
+}
+
+.ant-layout-header {
+  height: 64px;
+  line-height: 64px;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 10;
+}
+
+.ant-layout-content {
+  margin: 24px;
+  padding: 24px;
+  min-height: 280px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.ant-card {
+  border-radius: 8px;
+}
+
+.ant-card-head {
+  border-radius: 8px 8px 0 0;
+}
+
+.ant-statistic-title {
+  color: #666;
+  font-size: 14px;
+}
+
+.ant-statistic-content {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.ant-table-thead > tr > th {
+  background: #fafafa;
+  font-weight: 600;
+}
+
+.ant-btn {
+  border-radius: 6px;
+}
+
+.ant-btn-primary {
+  background: #1890ff;
+  border-color: #1890ff;
+}
+
+.ant-btn-primary:hover {
+  background: #40a9ff;
+  border-color: #40a9ff;
+}
+
+.ant-input,
+.ant-select-selector,
+.ant-picker {
+  border-radius: 6px;
+}
+
+.ant-tag {
+  border-radius: 4px;
+  margin-right: 4px;
+}
+
+.ant-modal-content {
+  border-radius: 8px;
+}
+
+.ant-modal-header {
+  border-radius: 8px 8px 0 0;
+}
+
+.ant-drawer-content {
+  border-radius: 8px 0 0 8px;
+}
+
+.ant-message {
+  z-index: 9999;
+}
+
+.ant-notification {
+  z-index: 9999;
+}
+
+.ant-tabs-tab {
+  font-size: 15px;
+}
+
+.ant-tabs-tab-active {
+  font-weight: 600;
+}
+
+.ant-progress-text {
+  font-size: 12px;
+}
+
+.ant-descriptions-item-label {
+  color: #666;
+}
+
+.ant-descriptions-item-content {
+  color: #333;
+}
+
+.ant-checkbox-wrapper {
+  margin-right: 0;
+}
+
+.ant-checkbox-inner {
+  border-radius: 4px;
+}
+
+.ant-radio-inner {
+  border-radius: 50%;
+}
+
+.ant-switch {
+  border-radius: 10px;
+}
+
+.ant-collapse-header {
+  font-weight: 500;
+}
+
+.ant-collapse-content {
+  background: #fafafa;
+}
+
+.ant-dropdown-menu {
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.ant-dropdown-menu-item {
+  border-radius: 4px;
+}
+
+.ant-popover-content {
+  border-radius: 8px;
+}
+
+.ant-tooltip-inner {
+  border-radius: 6px;
+}
+
+.ant-empty {
+  padding: 40px 0;
+}
+
+.ant-spin-container {
+  min-height: 100px;
+}
+
+.ant-badge-count {
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.ant-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ant-image {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.recharts-wrapper {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+}
+
+.recharts-tooltip-wrapper {
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.recharts-default-tooltip {
+  border-radius: 8px;
+  border: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 8px 12px;
+}
+
+.recharts-tooltip-label {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.recharts-tooltip-item {
+  margin: 2px 0;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+.text-success {
+  color: #52c41a;
+}
+
+.text-warning {
+  color: #faad14;
+}
+
+.text-error {
+  color: #ff4d4f;
+}
+
+.text-info {
+  color: #1890ff;
+}
+
+.bg-success {
+  background-color: #f6ffed;
+}
+
+.bg-warning {
+  background-color: #fffbe6;
+}
+
+.bg-error {
+  background-color: #fff2f0;
+}
+
+.bg-info {
+  background-color: #e6f7ff;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+@media (max-width: 768px) {
+  .ant-layout-sider {
+    position: fixed;
+    z-index: 999;
+  }
+
+  .ant-layout-content {
+    margin: 16px;
+    padding: 16px;
+  }
+
+  .ant-layout-header {
+    padding: 0 16px;
+  }
+}

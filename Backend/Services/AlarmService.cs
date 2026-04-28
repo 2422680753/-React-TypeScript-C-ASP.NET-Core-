@@ -1,18 +1,31 @@
 using IoTMonitoringPlatform.Data;
 using IoTMonitoringPlatform.DTOs;
+using IoTMonitoringPlatform.Hubs;
 using IoTMonitoringPlatform.Models;
 using IoTMonitoringPlatform.Services.Interfaces;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace IoTMonitoringPlatform.Services;
 
 public class AlarmService : IAlarmService
 {
     private readonly AppDbContext _context;
+    private readonly IAlarmGovernanceService _alarmGovernanceService;
+    private readonly IHubContext<MonitoringHub, IMonitoringHubClient> _hubContext;
+    private readonly ILogger<AlarmService> _logger;
 
-    public AlarmService(AppDbContext context)
+    public AlarmService(
+        AppDbContext context,
+        IAlarmGovernanceService alarmGovernanceService,
+        IHubContext<MonitoringHub, IMonitoringHubClient> hubContext,
+        ILogger<AlarmService> logger)
     {
         _context = context;
+        _alarmGovernanceService = alarmGovernanceService;
+        _hubContext = hubContext;
+        _logger = logger;
     }
 
     public async Task<AlarmDto> GetByIdAsync(Guid id)
@@ -214,6 +227,9 @@ public class AlarmService : IAlarmService
         alarm.AcknowledgedBy = userId;
 
         await _context.SaveChangesAsync();
+
+        var alarmDto = MapToAlarmDto(alarm);
+        await _hubContext.BroadcastAlarmUpdate(alarmDto);
     }
 
     public async Task ResolveAsync(Guid alarmId, string? userId, ResolveAlarmDto dto)
@@ -232,6 +248,9 @@ public class AlarmService : IAlarmService
         alarm.ResolutionNotes = dto.ResolutionNotes;
 
         await _context.SaveChangesAsync();
+
+        var alarmDto = MapToAlarmDto(alarm);
+        await _hubContext.BroadcastAlarmUpdate(alarmDto);
     }
 
     public async Task<AlarmStatisticsDto> GetStatisticsAsync()
@@ -272,50 +291,97 @@ public class AlarmService : IAlarmService
         {
             var shouldTrigger = EvaluateRule(rule, value);
 
-            if (shouldTrigger)
+            if (!shouldTrigger)
+                continue;
+
+            _logger.LogDebug("Rule {RuleId} triggered for device {DeviceId}, metric {Metric} = {Value}",
+                rule.Id, deviceId, metric, value);
+
+            var alarmLevel = DetermineAlarmLevel(rule, value);
+
+            var isDeduplicated = await _alarmGovernanceService.ShouldDeduplicateAsync(
+                deviceId, metric, value, alarmLevel);
+
+            if (isDeduplicated)
             {
-                if (rule.LastTriggeredAt.HasValue)
+                _logger.LogDebug("Alarm deduplicated for device {DeviceId}, metric {Metric}",
+                    deviceId, metric);
+                continue;
+            }
+
+            var isSuppressed = await _alarmGovernanceService.IsSuppressedAsync(
+                deviceId, metric, alarmLevel);
+
+            if (isSuppressed)
+            {
+                _logger.LogDebug("Alarm suppressed for device {DeviceId}, metric {Metric}",
+                    deviceId, metric);
+                continue;
+            }
+
+            var rateLimitAllowed = await _alarmGovernanceService.CheckRateLimitAsync(
+                deviceId, metric);
+
+            if (!rateLimitAllowed)
+            {
+                _logger.LogWarning("Alarm rate limit exceeded for device {DeviceId}, metric {Metric}",
+                    deviceId, metric);
+                continue;
+            }
+
+            if (rule.ConsecutiveOccurrences > 1)
+            {
+                var recentData = await _context.DeviceData
+                    .Where(d => d.DeviceId == deviceId &&
+                               d.Metric == metric &&
+                               d.Timestamp >= DateTime.UtcNow.AddSeconds(-rule.DurationSeconds))
+                    .OrderByDescending(d => d.Timestamp)
+                    .Take(rule.ConsecutiveOccurrences)
+                    .ToListAsync();
+
+                if (recentData.Count < rule.ConsecutiveOccurrences)
+                    continue;
+
+                var allMatch = recentData.All(d => EvaluateRule(rule, d.Value));
+                if (!allMatch)
+                    continue;
+            }
+
+            if (rule.LastTriggeredAt.HasValue)
+            {
+                var cooldownEnd = rule.LastTriggeredAt.Value.AddMinutes(rule.CooldownMinutes);
+                if (DateTime.UtcNow < cooldownEnd)
                 {
-                    var cooldownEnd = rule.LastTriggeredAt.Value.AddMinutes(rule.CooldownMinutes);
-                    if (DateTime.UtcNow < cooldownEnd)
-                    {
-                        continue;
-                    }
+                    _logger.LogDebug("Alarm in cooldown for device {DeviceId}, metric {Metric}",
+                        deviceId, metric);
+                    continue;
                 }
+            }
 
-                if (rule.ConsecutiveOccurrences > 1)
-                {
-                    var recentData = await _context.DeviceData
-                        .Where(d => d.DeviceId == deviceId &&
-                                   d.Metric == metric &&
-                                   d.Timestamp >= DateTime.UtcNow.AddSeconds(-rule.DurationSeconds))
-                        .OrderByDescending(d => d.Timestamp)
-                        .Take(rule.ConsecutiveOccurrences)
-                        .ToListAsync();
+            var title = $"{device.Name} - {metric} {rule.Operator} {rule.Threshold}";
+            var description = $"Device {device.Name} (Serial: {device.SerialNumber}) reported {metric} = {value}, which {GetOperatorDescription(rule.Operator)} threshold of {rule.Threshold}.";
 
-                    if (recentData.Count < rule.ConsecutiveOccurrences)
-                        continue;
+            var queueItem = new AlarmQueueItem
+            {
+                DeviceId = deviceId,
+                RuleId = rule.Id,
+                Title = title,
+                Description = description,
+                Level = alarmLevel,
+                TriggeredValue = value,
+                TriggeredMetric = metric,
+                Priority = (int)alarmLevel
+            };
 
-                    var allMatch = recentData.All(d => EvaluateRule(rule, d.Value));
-                    if (!allMatch)
-                        continue;
-                }
+            var queued = await _alarmGovernanceService.EnqueueAlarmAsync(queueItem);
 
-                var alarmLevel = rule.AlarmLevel;
+            if (queued)
+            {
+                _logger.LogInformation("Alarm queued for device {DeviceId}, metric {Metric}, level {Level}",
+                    deviceId, metric, alarmLevel);
 
-                if (rule.CriticalThreshold.HasValue && value >= rule.CriticalThreshold.Value)
-                {
-                    alarmLevel = AlarmLevel.Critical;
-                }
-                else if (rule.WarningThreshold.HasValue && value >= rule.WarningThreshold.Value)
-                {
-                    alarmLevel = AlarmLevel.Warning;
-                }
-
-                var title = $"{device.Name} - {metric} {rule.Operator} {rule.Threshold}";
-                var description = $"Device {device.Name} (Serial: {device.SerialNumber}) reported {metric} = {value}, which {GetOperatorDescription(rule.Operator)} threshold of {rule.Threshold}.";
-
-                await CreateAlarmAsync(device, rule, title, description, alarmLevel, value, metric);
+                await _alarmGovernanceService.RecordDeduplicationAsync(
+                    deviceId, metric, value, alarmLevel);
 
                 rule.LastTriggeredAt = DateTime.UtcNow;
                 rule.UpdatedAt = DateTime.UtcNow;
@@ -330,6 +396,10 @@ public class AlarmService : IAlarmService
                 }
 
                 await _context.SaveChangesAsync();
+            }
+            else
+            {
+                _logger.LogWarning("Alarm queue full, alarm dropped for device {DeviceId}", deviceId);
             }
         }
     }
@@ -356,6 +426,70 @@ public class AlarmService : IAlarmService
         return alarm;
     }
 
+    public async Task<AlarmGovernanceStatsDto> GetGovernanceStatsAsync()
+    {
+        var stats = await _alarmGovernanceService.GetStatsAsync();
+
+        return new AlarmGovernanceStatsDto
+        {
+            ActiveSuppressions = stats.ActiveSuppressions,
+            ActiveAggregations = stats.ActiveAggregations,
+            QueueSize = stats.QueueSize,
+            ProcessedCount = stats.ProcessedCount,
+            DroppedCount = stats.DroppedCount,
+            DeduplicatedCount = stats.DeduplicatedCount,
+            SuppressedCount = stats.SuppressedCount
+        };
+    }
+
+    public async Task<List<AlarmSuppressionDto>> GetActiveSuppressionsAsync()
+    {
+        var suppressions = await _alarmGovernanceService.GetActiveSuppressionsAsync();
+
+        return suppressions.Select(s => new AlarmSuppressionDto
+        {
+            Id = s.Id,
+            Name = s.Name,
+            Description = s.Description,
+            Type = s.Type.ToString(),
+            StartTime = s.StartTime,
+            EndTime = s.EndTime,
+            IsActive = s.IsActive,
+            SuppressedCount = s.SuppressedCount
+        }).ToList();
+    }
+
+    public async Task<AlarmSuppressionDto> CreateSuppressionAsync(AlarmSuppressionDto dto)
+    {
+        var suppression = new AlarmSuppression
+        {
+            Id = Guid.NewGuid(),
+            Name = dto.Name,
+            Description = dto.Description,
+            Type = Enum.Parse<SuppressionType>(dto.Type, true),
+            DeviceId = dto.Id != Guid.Empty ? dto.Id : null,
+            StartTime = dto.StartTime,
+            EndTime = dto.EndTime,
+            IsActive = dto.IsActive,
+            SuppressedCount = 0,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        var result = await _alarmGovernanceService.CreateSuppressionAsync(suppression);
+
+        return new AlarmSuppressionDto
+        {
+            Id = result.Id,
+            Name = result.Name,
+            Description = result.Description,
+            Type = result.Type.ToString(),
+            StartTime = result.StartTime,
+            EndTime = result.EndTime,
+            IsActive = result.IsActive,
+            SuppressedCount = result.SuppressedCount
+        };
+    }
+
     private static bool EvaluateRule(AlarmRule rule, double value)
     {
         return rule.Operator switch
@@ -370,6 +504,45 @@ public class AlarmService : IAlarmService
             ComparisonOperator.Outside => value < rule.Threshold || value > (rule.WarningThreshold ?? rule.Threshold + 1),
             _ => false
         };
+    }
+
+    private static AlarmLevel DetermineAlarmLevel(AlarmRule rule, double value)
+    {
+        var alarmLevel = rule.AlarmLevel;
+
+        if (rule.CriticalThreshold.HasValue)
+        {
+            if (rule.Operator == ComparisonOperator.GreaterThan ||
+                rule.Operator == ComparisonOperator.GreaterThanOrEqual)
+            {
+                if (value >= rule.CriticalThreshold.Value)
+                    return AlarmLevel.Critical;
+            }
+            else if (rule.Operator == ComparisonOperator.LessThan ||
+                     rule.Operator == ComparisonOperator.LessThanOrEqual)
+            {
+                if (value <= rule.CriticalThreshold.Value)
+                    return AlarmLevel.Critical;
+            }
+        }
+
+        if (rule.WarningThreshold.HasValue)
+        {
+            if (rule.Operator == ComparisonOperator.GreaterThan ||
+                rule.Operator == ComparisonOperator.GreaterThanOrEqual)
+            {
+                if (value >= rule.WarningThreshold.Value)
+                    return AlarmLevel.Warning;
+            }
+            else if (rule.Operator == ComparisonOperator.LessThan ||
+                     rule.Operator == ComparisonOperator.LessThanOrEqual)
+            {
+                if (value <= rule.WarningThreshold.Value)
+                    return AlarmLevel.Warning;
+            }
+        }
+
+        return alarmLevel;
     }
 
     private static string GetOperatorDescription(ComparisonOperator op)

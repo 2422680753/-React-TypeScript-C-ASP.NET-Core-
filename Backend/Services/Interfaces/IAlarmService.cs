@@ -17,4 +17,7 @@ public interface IAlarmService
     Task<AlarmStatisticsDto> GetStatisticsAsync();
     Task CheckAndTriggerAlarmsAsync(Guid deviceId, string metric, double value);
     Task<Alarm> CreateAlarmAsync(Device device, AlarmRule? rule, string title, string? description, AlarmLevel level, double? triggeredValue, string? triggeredMetric);
+    Task<AlarmGovernanceStatsDto> GetGovernanceStatsAsync();
+    Task<List<AlarmSuppressionDto>> GetActiveSuppressionsAsync();
+    Task<AlarmSuppressionDto> CreateSuppressionAsync(AlarmSuppressionDto dto);
 }

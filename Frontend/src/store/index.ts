@@ -4,8 +4,6 @@ import type {
   Device,
   DeviceStatistics,
   RealTimeData,
-  Alarm,
-  AlarmStatistics,
   AlarmRule,
   ControlCommand,
   DeviceStatus,
@@ -71,6 +69,7 @@ interface DeviceState {
   deviceStatistics: DeviceStatistics | null;
   realTimeData: Record<string, RealTimeData>;
   isLoading: boolean;
+  deviceIdSet: Set<string>;
   
   setDevices: (devices: Device[]) => void;
   setSelectedDevice: (device: Device | null) => void;
@@ -89,8 +88,12 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   deviceStatistics: null,
   realTimeData: {},
   isLoading: false,
+  deviceIdSet: new Set(),
 
-  setDevices: (devices) => set({ devices }),
+  setDevices: (devices) => {
+    const deviceIdSet = new Set(devices.map(d => d.id));
+    set({ devices, deviceIdSet });
+  },
   setSelectedDevice: (selectedDevice) => set({ selectedDevice }),
   setDeviceStatistics: (deviceStatistics) => set({ deviceStatistics }),
 
@@ -112,12 +115,19 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   },
 
   addDevice: (device) => {
+    const { deviceIdSet, devices } = get();
+    if (deviceIdSet.has(device.id)) return;
+    
     set((state) => ({
       devices: [device, ...state.devices],
+      deviceIdSet: new Set([...state.deviceIdSet, device.id]),
     }));
   },
 
   updateDevice: (updatedDevice) => {
+    const { deviceIdSet } = get();
+    const isNewDevice = !deviceIdSet.has(updatedDevice.id);
+    
     set((state) => ({
       devices: state.devices.map((d) =>
         d.id === updatedDevice.id ? updatedDevice : d
@@ -126,101 +136,27 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         state.selectedDevice?.id === updatedDevice.id
           ? updatedDevice
           : state.selectedDevice,
+      deviceIdSet: isNewDevice 
+        ? new Set([...state.deviceIdSet, updatedDevice.id])
+        : state.deviceIdSet,
     }));
   },
 
   removeDevice: (deviceId) => {
-    set((state) => ({
-      devices: state.devices.filter((d) => d.id !== deviceId),
-      selectedDevice:
-        state.selectedDevice?.id === deviceId ? null : state.selectedDevice,
-    }));
+    set((state) => {
+      const newDeviceIdSet = new Set(state.deviceIdSet);
+      newDeviceIdSet.delete(deviceId);
+      
+      return {
+        devices: state.devices.filter((d) => d.id !== deviceId),
+        selectedDevice:
+          state.selectedDevice?.id === deviceId ? null : state.selectedDevice,
+        deviceIdSet: newDeviceIdSet,
+      };
+    });
   },
 
   setLoading: (isLoading) => set({ isLoading }),
-}));
-
-interface AlarmState {
-  alarms: Alarm[];
-  alarmRules: AlarmRule[];
-  alarmStatistics: AlarmStatistics | null;
-  selectedAlarm: Alarm | null;
-  unreadCount: number;
-  isLoading: boolean;
-  
-  setAlarms: (alarms: Alarm[]) => void;
-  setAlarmRules: (rules: AlarmRule[]) => void;
-  setAlarmStatistics: (stats: AlarmStatistics | null) => void;
-  setSelectedAlarm: (alarm: Alarm | null) => void;
-  addAlarm: (alarm: Alarm) => void;
-  updateAlarm: (alarm: Alarm) => void;
-  addAlarmRule: (rule: AlarmRule) => void;
-  updateAlarmRule: (rule: AlarmRule) => void;
-  removeAlarmRule: (ruleId: string) => void;
-  setLoading: (loading: boolean) => void;
-  incrementUnreadCount: () => void;
-  resetUnreadCount: () => void;
-}
-
-export const useAlarmStore = create<AlarmState>((set, get) => ({
-  alarms: [],
-  alarmRules: [],
-  alarmStatistics: null,
-  selectedAlarm: null,
-  unreadCount: 0,
-  isLoading: false,
-
-  setAlarms: (alarms) => set({ alarms }),
-  setAlarmRules: (alarmRules) => set({ alarmRules }),
-  setAlarmStatistics: (alarmStatistics) => set({ alarmStatistics }),
-  setSelectedAlarm: (selectedAlarm) => set({ selectedAlarm }),
-
-  addAlarm: (alarm) => {
-    set((state) => ({
-      alarms: [alarm, ...state.alarms],
-      unreadCount: state.unreadCount + 1,
-    }));
-  },
-
-  updateAlarm: (updatedAlarm) => {
-    set((state) => ({
-      alarms: state.alarms.map((a) =>
-        a.id === updatedAlarm.id ? updatedAlarm : a
-      ),
-      selectedAlarm:
-        state.selectedAlarm?.id === updatedAlarm.id
-          ? updatedAlarm
-          : state.selectedAlarm,
-    }));
-  },
-
-  addAlarmRule: (rule) => {
-    set((state) => ({
-      alarmRules: [rule, ...state.alarmRules],
-    }));
-  },
-
-  updateAlarmRule: (updatedRule) => {
-    set((state) => ({
-      alarmRules: state.alarmRules.map((r) =>
-        r.id === updatedRule.id ? updatedRule : r
-      ),
-    }));
-  },
-
-  removeAlarmRule: (ruleId) => {
-    set((state) => ({
-      alarmRules: state.alarmRules.filter((r) => r.id !== ruleId),
-    }));
-  },
-
-  setLoading: (isLoading) => set({ isLoading }),
-
-  incrementUnreadCount: () => {
-    set((state) => ({ unreadCount: state.unreadCount + 1 }));
-  },
-
-  resetUnreadCount: () => set({ unreadCount: 0 }),
 }));
 
 interface ControlState {
@@ -307,3 +243,5 @@ export const useNotificationStore = create<NotificationState>((set) => ({
     }));
   },
 }));
+
+export { useAlarmStore } from './alarmStore';

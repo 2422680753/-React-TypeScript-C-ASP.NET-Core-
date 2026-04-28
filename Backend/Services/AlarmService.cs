@@ -1,18 +1,31 @@
 using IoTMonitoringPlatform.Data;
 using IoTMonitoringPlatform.DTOs;
+using IoTMonitoringPlatform.Hubs;
 using IoTMonitoringPlatform.Models;
 using IoTMonitoringPlatform.Services.Interfaces;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace IoTMonitoringPlatform.Services;
 
 public class AlarmService : IAlarmService
 {
     private readonly AppDbContext _context;
+    private readonly IEnhancedAlarmGovernanceService _alarmGovernanceService;
+    private readonly IHubContext<MonitoringHub, IMonitoringHubClient> _hubContext;
+    private readonly ILogger<AlarmService> _logger;
 
-    public AlarmService(AppDbContext context)
+    public AlarmService(
+        AppDbContext context,
+        IEnhancedAlarmGovernanceService alarmGovernanceService,
+        IHubContext<MonitoringHub, IMonitoringHubClient> hubContext,
+        ILogger<AlarmService> logger)
     {
         _context = context;
+        _alarmGovernanceService = alarmGovernanceService;
+        _hubContext = hubContext;
+        _logger = logger;
     }
 
     public async Task<AlarmDto> GetByIdAsync(Guid id)
@@ -189,7 +202,7 @@ public class AlarmService : IAlarmService
 
         if (deviceId.HasValue)
         {
-            query = query.Where(r => r.DeviceId == deviceId || r.GroupId == null);
+            query = query.Where(r => r.DeviceId == deviceId || r.DeviceId == null);
         }
 
         var rules = await query
@@ -214,6 +227,9 @@ public class AlarmService : IAlarmService
         alarm.AcknowledgedBy = userId;
 
         await _context.SaveChangesAsync();
+
+        var alarmDto = MapToAlarmDto(alarm);
+        await _hubContext.BroadcastAlarmUpdate(alarmDto);
     }
 
     public async Task ResolveAsync(Guid alarmId, string? userId, ResolveAlarmDto dto)
@@ -232,6 +248,9 @@ public class AlarmService : IAlarmService
         alarm.ResolutionNotes = dto.ResolutionNotes;
 
         await _context.SaveChangesAsync();
+
+        var alarmDto = MapToAlarmDto(alarm);
+        await _hubContext.BroadcastAlarmUpdate(alarmDto);
     }
 
     public async Task<AlarmStatisticsDto> GetStatisticsAsync()
@@ -260,7 +279,10 @@ public class AlarmService : IAlarmService
     {
         var device = await _context.Devices.FindAsync(deviceId);
         if (device == null)
+        {
+            _logger.LogWarning("Device not found: {DeviceId}", deviceId);
             return;
+        }
 
         var rules = await _context.AlarmRules
             .Where(r => r.IsEnabled &&
@@ -268,54 +290,45 @@ public class AlarmService : IAlarmService
                        r.Metric == metric)
             .ToListAsync();
 
+        _logger.LogDebug(
+            "Checking {RuleCount} rules for device {DeviceId}, metric {Metric} = {Value}",
+            rules.Count, deviceId, metric, value);
+
         foreach (var rule in rules)
         {
             var shouldTrigger = EvaluateRule(rule, value);
 
-            if (shouldTrigger)
+            if (!shouldTrigger)
             {
-                if (rule.LastTriggeredAt.HasValue)
-                {
-                    var cooldownEnd = rule.LastTriggeredAt.Value.AddMinutes(rule.CooldownMinutes);
-                    if (DateTime.UtcNow < cooldownEnd)
-                    {
-                        continue;
-                    }
-                }
+                _logger.LogDebug(
+                    "Rule {RuleId} not triggered for metric {Metric} = {Value} (threshold: {Threshold} {Operator})",
+                    rule.Id, metric, value, rule.Threshold, rule.Operator);
 
-                if (rule.ConsecutiveOccurrences > 1)
-                {
-                    var recentData = await _context.DeviceData
-                        .Where(d => d.DeviceId == deviceId &&
-                                   d.Metric == metric &&
-                                   d.Timestamp >= DateTime.UtcNow.AddSeconds(-rule.DurationSeconds))
-                        .OrderByDescending(d => d.Timestamp)
-                        .Take(rule.ConsecutiveOccurrences)
-                        .ToListAsync();
+                continue;
+            }
 
-                    if (recentData.Count < rule.ConsecutiveOccurrences)
-                        continue;
+            var alarmLevel = DetermineAlarmLevel(rule, value);
 
-                    var allMatch = recentData.All(d => EvaluateRule(rule, d.Value));
-                    if (!allMatch)
-                        continue;
-                }
+            var title = $"{device.Name} - {metric} {rule.Operator} {rule.Threshold}";
+            var description = $"Device {device.Name} (Serial: {device.SerialNumber}) reported {metric} = {value}, which {GetOperatorDescription(rule.Operator)} threshold of {rule.Threshold}.";
 
-                var alarmLevel = rule.AlarmLevel;
+            _logger.LogInformation(
+                "Rule triggered: Device={DeviceId}, Metric={Metric}, Value={Value}, Level={Level}, Rule={RuleId}",
+                deviceId, metric, value, alarmLevel, rule.Id);
 
-                if (rule.CriticalThreshold.HasValue && value >= rule.CriticalThreshold.Value)
-                {
-                    alarmLevel = AlarmLevel.Critical;
-                }
-                else if (rule.WarningThreshold.HasValue && value >= rule.WarningThreshold.Value)
-                {
-                    alarmLevel = AlarmLevel.Warning;
-                }
+            var result = await _alarmGovernanceService.CheckAlarmAsync(
+                deviceId,
+                metric,
+                value,
+                alarmLevel,
+                title,
+                description);
 
-                var title = $"{device.Name} - {metric} {rule.Operator} {rule.Threshold}";
-                var description = $"Device {device.Name} (Serial: {device.SerialNumber}) reported {metric} = {value}, which {GetOperatorDescription(rule.Operator)} threshold of {rule.Threshold}.";
-
-                await CreateAlarmAsync(device, rule, title, description, alarmLevel, value, metric);
+            if (result.ShouldEnqueue)
+            {
+                _logger.LogInformation(
+                    "Alarm queued: Device={DeviceId}, Metric={Metric}, Level={Level}, QueueItemId={QueueItemId}",
+                    deviceId, metric, alarmLevel, result.QueueItemId);
 
                 rule.LastTriggeredAt = DateTime.UtcNow;
                 rule.UpdatedAt = DateTime.UtcNow;
@@ -330,6 +343,12 @@ public class AlarmService : IAlarmService
                 }
 
                 await _context.SaveChangesAsync();
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Alarm not queued: Device={DeviceId}, Metric={Metric}, Reason={Reason}",
+                    deviceId, metric, result.Reason);
             }
         }
     }
@@ -356,6 +375,67 @@ public class AlarmService : IAlarmService
         return alarm;
     }
 
+    public async Task<AlarmGovernanceStatsDto> GetGovernanceStatsAsync()
+    {
+        return await _alarmGovernanceService.GetStatsAsync();
+    }
+
+    public async Task<List<AlarmSuppressionDto>> GetActiveSuppressionsAsync()
+    {
+        var now = DateTime.UtcNow;
+
+        var suppressions = await _context.AlarmSuppressions
+            .Where(s => s.IsActive &&
+                       s.StartTime <= now &&
+                       s.EndTime >= now)
+            .OrderBy(s => s.EndTime)
+            .ToListAsync();
+
+        return suppressions.Select(s => new AlarmSuppressionDto
+        {
+            Id = s.Id,
+            Name = s.Name,
+            Description = s.Description,
+            Type = s.Type.ToString(),
+            StartTime = s.StartTime,
+            EndTime = s.EndTime,
+            IsActive = s.IsActive,
+            SuppressedCount = s.SuppressedCount
+        }).ToList();
+    }
+
+    public async Task<AlarmSuppressionDto> CreateSuppressionAsync(AlarmSuppressionDto dto)
+    {
+        var suppression = new AlarmSuppression
+        {
+            Id = Guid.NewGuid(),
+            Name = dto.Name,
+            Description = dto.Description,
+            Type = Enum.Parse<SuppressionType>(dto.Type, true),
+            DeviceId = dto.Id != Guid.Empty ? dto.Id : null,
+            StartTime = dto.StartTime,
+            EndTime = dto.EndTime,
+            IsActive = dto.IsActive,
+            SuppressedCount = 0,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _context.AlarmSuppressions.Add(suppression);
+        await _context.SaveChangesAsync();
+
+        return new AlarmSuppressionDto
+        {
+            Id = suppression.Id,
+            Name = suppression.Name,
+            Description = suppression.Description,
+            Type = suppression.Type.ToString(),
+            StartTime = suppression.StartTime,
+            EndTime = suppression.EndTime,
+            IsActive = suppression.IsActive,
+            SuppressedCount = suppression.SuppressedCount
+        };
+    }
+
     private static bool EvaluateRule(AlarmRule rule, double value)
     {
         return rule.Operator switch
@@ -370,6 +450,45 @@ public class AlarmService : IAlarmService
             ComparisonOperator.Outside => value < rule.Threshold || value > (rule.WarningThreshold ?? rule.Threshold + 1),
             _ => false
         };
+    }
+
+    private static AlarmLevel DetermineAlarmLevel(AlarmRule rule, double value)
+    {
+        var alarmLevel = rule.AlarmLevel;
+
+        if (rule.CriticalThreshold.HasValue)
+        {
+            if (rule.Operator == ComparisonOperator.GreaterThan ||
+                rule.Operator == ComparisonOperator.GreaterThanOrEqual)
+            {
+                if (value >= rule.CriticalThreshold.Value)
+                    return AlarmLevel.Critical;
+            }
+            else if (rule.Operator == ComparisonOperator.LessThan ||
+                     rule.Operator == ComparisonOperator.LessThanOrEqual)
+            {
+                if (value <= rule.CriticalThreshold.Value)
+                    return AlarmLevel.Critical;
+            }
+        }
+
+        if (rule.WarningThreshold.HasValue)
+        {
+            if (rule.Operator == ComparisonOperator.GreaterThan ||
+                rule.Operator == ComparisonOperator.GreaterThanOrEqual)
+            {
+                if (value >= rule.WarningThreshold.Value)
+                    return AlarmLevel.Warning;
+            }
+            else if (rule.Operator == ComparisonOperator.LessThan ||
+                     rule.Operator == ComparisonOperator.LessThanOrEqual)
+            {
+                if (value <= rule.WarningThreshold.Value)
+                    return AlarmLevel.Warning;
+            }
+        }
+
+        return alarmLevel;
     }
 
     private static string GetOperatorDescription(ComparisonOperator op)

@@ -78,6 +78,7 @@ export interface Alarm {
   resolutionNotes?: string;
   triggeredValue?: number;
   triggeredMetric?: string;
+  aggregationId?: string;
 }
 
 export type AlarmLevel = 'Information' | 'Warning' | 'Critical' | 'Emergency';
@@ -290,3 +291,124 @@ export interface PaginatedResponse<T> {
   pageSize: number;
   totalPages: number;
 }
+
+export interface HeartbeatDto {
+  deviceId: string;
+  timestamp: string;
+  status: DeviceStatus;
+  metrics?: Record<string, number>;
+  latencyMs?: number;
+}
+
+export interface HeartbeatResponseDto {
+  deviceId: string;
+  serverTime: string;
+  nextHeartbeatIntervalMs: number;
+  commands?: ControlCommand[];
+}
+
+export interface DeviceStateDto {
+  deviceId: string;
+  currentStatus: DeviceStatus;
+  previousStatus?: DeviceStatus;
+  statusChangedAt: string;
+  version: number;
+  metrics?: Record<string, number>;
+  isConsistent: boolean;
+}
+
+export interface StateSyncRequestDto {
+  lastKnownVersion?: number;
+  deviceIds?: string[];
+  timestamp: string;
+  requestFullSnapshot: boolean;
+}
+
+export interface StateSyncResponseDto {
+  timestamp: string;
+  isFullSnapshot: boolean;
+  states: DeviceStateDto[];
+  checksum: string;
+  syncId: string;
+}
+
+export interface StateConsistencyCheckDto {
+  deviceId: string;
+  cacheStatus: DeviceStatus;
+  databaseStatus: DeviceStatus;
+  isConsistent: boolean;
+  lastUpdatedAt: string;
+  autoFixApplied: boolean;
+}
+
+export interface DeviceOnlineEventDto {
+  deviceId: string;
+  deviceName: string;
+  onlineTime: string;
+  previousStatus?: DeviceStatus;
+  connectionType: string;
+  metrics?: Record<string, number>;
+}
+
+export interface DeviceOfflineEventDto {
+  deviceId: string;
+  deviceName: string;
+  offlineTime: string;
+  reason: string;
+  lastHeartbeatTime?: string;
+}
+
+export interface ConnectionStatusDto {
+  isConnected: boolean;
+  connectionId?: string;
+  reconnectAttempts: number;
+  lastConnectedAt?: string;
+  lastDisconnectedAt?: string;
+}
+
+export interface AlarmDeduplicationDto {
+  deviceId: string;
+  metric: string;
+  occurrenceCount: number;
+  firstTriggeredAt: string;
+  lastTriggeredAt: string;
+  lastValue: number;
+}
+
+export interface AlarmSuppressionDto {
+  id: string;
+  name: string;
+  description?: string;
+  type: SuppressionType;
+  startTime: string;
+  endTime: string;
+  isActive: boolean;
+  suppressedCount: number;
+}
+
+export type SuppressionType = 'Maintenance' | 'KnownIssue' | 'PlannedDowntime' | 'Custom';
+
+export interface AlarmAggregationDto {
+  id: string;
+  correlationId: string;
+  deviceId?: string;
+  highestLevel: AlarmLevel;
+  alarmCount: number;
+  aggregatedTitle: string;
+  firstOccurredAt: string;
+  lastOccurredAt: string;
+  isResolved: boolean;
+  alarms: Alarm[];
+}
+
+export interface AlarmGovernanceStats {
+  activeSuppressions: number;
+  activeAggregations: number;
+  queueSize: number;
+  processedCount: number;
+  droppedCount: number;
+  deduplicatedCount: number;
+  suppressedCount: number;
+}
+
+export type ConnectionType = 'WebSocket' | 'MQTT' | 'HTTP';
